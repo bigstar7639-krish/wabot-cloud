@@ -26,8 +26,7 @@ import {
   getActiveSessionCount,
 } from './gemini.js';
 
-if (process.platform !== 'win32') process.umask(0o077);
-
+if (process.platform!== 'win32') process.umask(0o077);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 4000;
 
@@ -37,7 +36,7 @@ function getLocalIps() {
     const ifaces = os.networkInterfaces();
     for (const name of Object.keys(ifaces)) {
       for (const net of ifaces[name]) {
-        if (net.family === 'IPv4' && !net.internal) {
+        if (net.family === 'IPv4' &&!net.internal) {
           ips.push(net.address);
         }
       }
@@ -45,8 +44,6 @@ function getLocalIps() {
   } catch {}
   return ips;
 }
-
-// Allowed origins for strict CORS & WebSocket security
 const localIps = getLocalIps();
 const allowedOriginSet = new Set([
   'http://localhost:4000',
@@ -58,41 +55,30 @@ localIps.forEach((ip) => {
   allowedOriginSet.add(`http://${ip}:4000`);
   allowedOriginSet.add(`http://${ip}:5173`);
 });
-// Always allow the server's own origin (the bundled UI is served same-origin
-// from this port). Without this, running on any PORT other than 4000/5173
-// makes the browser's same-origin API calls fail CORS and the UI appears dead.
 allowedOriginSet.add(`http://localhost:${PORT}`);
 allowedOriginSet.add(`http://127.0.0.1:${PORT}`);
 localIps.forEach((ip) => allowedOriginSet.add(`http://${ip}:${PORT}`));
-
 if (process.env.WABOT_ORIGINS) {
   process.env.WABOT_ORIGINS.split(',').forEach((o) => {
     if (o.trim()) allowedOriginSet.add(o.trim());
   });
 }
-
 if (process.env.WABOT_DOMAIN) {
   const domain = process.env.WABOT_DOMAIN.trim().replace(/^https?:\/\//, '');
   allowedOriginSet.add(`https://${domain}`);
   allowedOriginSet.add(`http://${domain}`);
 }
-
 function isOriginAllowed(origin) {
-  if (!origin) return true; // Direct non-browser requests / curl / CLI
+  if (!origin) return true;
   if (process.env.WABOT_ALLOW_ANY_ORIGIN === 'true' || allowedOriginSet.has('*')) return true;
   return allowedOriginSet.has(origin);
 }
-
 const app = express();
-// Trust proxy if explicitly configured (behind Nginx, Cloudflare, Traefik, or reverse proxy)
 const isBehindProxy =
   process.env.TRUST_PROXY === 'true' ||
   process.env.BEHIND_PROXY === 'true';
-app.set('trust proxy', isBehindProxy ? 'loopback' : false);
+app.set('trust proxy', isBehindProxy? 'loopback' : false);
 app.disable('x-powered-by');
-// Do not force HTTP deployments to HTTPS at the browser layer.
-// HTTPS is normally terminated by the reverse proxy in production; relative
-// asset URLs should remain same-origin for both HTTP (local/testing) and HTTPS.
 app.use(helmet({
   crossOriginEmbedderPolicy: false,
   contentSecurityPolicy: {
@@ -101,8 +87,6 @@ app.use(helmet({
     },
   },
 }));
-
-// Standard HTTP Security Headers (anti-clickjacking, anti-MIME-sniffing, etc.)
 app.use((_req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
@@ -111,8 +95,6 @@ app.use((_req, res, next) => {
   res.setHeader('X-Permitted-Cross-Domain-Policies', 'none');
   next();
 });
-
-// Strict CORS protection against Drive-By Localhost Attacks
 app.use(cors((req, callback) => {
   const origin = req.get('Origin');
   if (!origin) return callback(null, { origin: false });
@@ -130,8 +112,6 @@ app.use(cors((req, callback) => {
   }
   return callback(new Error('CORS origin not allowed'));
 }));
-
-// Bounded JSON body parsing with clean error handling
 app.use(express.json({ limit: '256kb' }));
 app.use((err, _req, res, next) => {
   if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
@@ -139,7 +119,6 @@ app.use((err, _req, res, next) => {
   }
   next(err);
 });
-
 const server = http.createServer(app);
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
@@ -148,8 +127,6 @@ server.on('error', (err) => {
   }
   console.error('Server error:', err.message);
 });
-
-// Socket.IO with strict handshake origin & token verification
 const io = new Server(server, {
   cors: { origin: true, credentials: true },
   allowRequest: (req, callback) => {
@@ -161,11 +138,9 @@ const io = new Server(server, {
   },
 });
 io.use(socketAuth);
-
-// Server state
 const startTime = Date.now();
 const state = {
-  status: 'disconnected', // 'disconnected' | 'connecting' | 'qr' | 'connected'
+  status: 'disconnected',
   qr: null,
   rawQr: null,
   phone: null,
@@ -173,7 +148,6 @@ const state = {
   pairingCode: null,
   uptime: 0,
 };
-
 const stats = {
   received: 0,
   replied: 0,
@@ -181,17 +155,12 @@ const stats = {
   rulesTriggered: 0,
   errors: 0,
 };
-
 const logs = [];
 const processedMsgIds = new Set();
-const loopBreaker = new JidLoopBreaker(6, 60000, 120000); // Max 6 replies/minute per JID
+const loopBreaker = new JidLoopBreaker(6, 60000, 120000);
 let sock = null;
 let starting = false;
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-// Record a WhatsApp message id in the dedupe cache with a hard size cap. Used for
-// BOTH inbound and outbound (self-echo) ids so the Set can never grow unbounded.
 function rememberMsgId(id) {
   if (!id) return;
   processedMsgIds.add(id);
@@ -200,12 +169,10 @@ function rememberMsgId(id) {
     processedMsgIds.delete(first);
   }
 }
-
 const authDir = path.join(__dirname, '..', 'auth');
 const lockFilePath = path.join(authDir, '.session.lock');
-
 function isPidAlive(pid) {
-  if (!pid || typeof pid !== 'number') return false;
+  if (!pid || typeof pid!== 'number') return false;
   try {
     process.kill(pid, 0);
     return true;
@@ -213,17 +180,12 @@ function isPidAlive(pid) {
     return e.code === 'EPERM';
   }
 }
-
 function acquireSessionLock() {
   try {
     if (!existsSync(authDir)) {
       mkdirSync(authDir, { recursive: true, mode: 0o700 });
     }
     try { chmodSync(authDir, 0o700); } catch {}
-
-    // O_EXCL semantics via the wx flag make acquisition atomic. The previous
-    // read-then-write sequence allowed two processes to observe a missing lock
-    // simultaneously and both start the same WhatsApp session.
     try {
       writeFileSync(
         lockFilePath,
@@ -233,22 +195,17 @@ function acquireSessionLock() {
       try { chmodSync(lockFilePath, 0o600); } catch {}
       return { acquired: true };
     } catch (err) {
-      if (err?.code !== 'EEXIST') throw err;
+      if (err?.code!== 'EEXIST') throw err;
     }
-
     let data = null;
     try {
       data = JSON.parse(readFileSync(lockFilePath, 'utf8'));
     } catch {
-      // A corrupt lock must not silently permit a second WhatsApp session.
       return { acquired: false, pid: null };
     }
-
-    if (data?.pid && data.pid !== process.pid && isPidAlive(data.pid)) {
+    if (data?.pid && data.pid!== process.pid && isPidAlive(data.pid)) {
       return { acquired: false, pid: data.pid };
     }
-
-    // Stale lock: remove it and atomically compete for it again.
     try { unlinkSync(lockFilePath); } catch {}
     try {
       writeFileSync(
@@ -269,7 +226,6 @@ function acquireSessionLock() {
     return { acquired: false, pid: null };
   }
 }
-
 function releaseSessionLock() {
   try {
     if (existsSync(lockFilePath)) {
@@ -281,9 +237,7 @@ function releaseSessionLock() {
     }
   } catch {}
 }
-
 process.on('exit', releaseSessionLock);
-
 function clearAuthDir() {
   if (existsSync(authDir)) {
     try {
@@ -293,30 +247,27 @@ function clearAuthDir() {
     }
   }
 }
-
 function pushLog(direction, sender, body, meta = {}) {
   const entry = {
     id: Date.now() + Math.random(),
-    direction, // 'in' | 'out' | 'sys'
+    direction,
     sender,
     pushName: meta.pushName || '',
     body: redactSecrets(body || ''),
-    isGroup: !!meta.isGroup,
+    isGroup:!!meta.isGroup,
     ruleMatched: meta.ruleMatched || null,
     time: new Date().toISOString(),
   };
   logs.push(entry);
   if (logs.length > 300) logs.shift();
   io.emit('log', entry);
-  io.emit('stats', { ...stats, activeSessions: getActiveSessionCount() });
+  io.emit('stats', {...stats, activeSessions: getActiveSessionCount() });
 }
-
 function setStatus(patch) {
   Object.assign(state, patch);
   state.uptime = Math.floor((Date.now() - startTime) / 1000);
-  io.emit('state', { ...state, stats: { ...stats, activeSessions: getActiveSessionCount() } });
+  io.emit('state', {...state, stats: {...stats, activeSessions: getActiveSessionCount() } });
 }
-
 function wipeAllData() {
   clearAuthDir();
   clearChatHistory();
@@ -333,20 +284,16 @@ function wipeAllData() {
   state.profileName = null;
   state.pairingCode = null;
   io.emit('logs-cleared');
-  io.emit('stats', { ...stats, activeSessions: 0 });
-  io.emit('state', { ...state, stats: { ...stats, activeSessions: 0 } });
+  io.emit('stats', {...stats, activeSessions: 0 });
+  io.emit('state', {...state, stats: {...stats, activeSessions: 0 } });
 }
-
-// Extract human text from any deep WhatsApp message object
 function extractMessageContent(msg) {
   if (!msg.message) return { text: '', quotedText: '' };
-
   const m =
     msg.message.ephemeralMessage?.message ||
     msg.message.viewOnceMessage?.message ||
     msg.message.viewOnceMessageV2?.message ||
     msg.message;
-
   const text =
     m.conversation ||
     m.extendedTextMessage?.text ||
@@ -354,7 +301,6 @@ function extractMessageContent(msg) {
     m.videoMessage?.caption ||
     m.documentMessage?.caption ||
     '';
-
   const ctx = m.extendedTextMessage?.contextInfo;
   let quotedText = '';
   if (ctx?.quotedMessage) {
@@ -366,52 +312,34 @@ function extractMessageContent(msg) {
       qm.videoMessage?.caption ||
       '';
   }
-
   return { text: text.trim(), quotedText: quotedText.trim() };
 }
-
-// Clean phone number from jid
 function parseSender(jid, participant, isGroup) {
-  const raw = isGroup ? participant : jid;
+  const raw = isGroup? participant : jid;
   if (!raw) return 'unknown';
   return raw.split('@')[0].split(':')[0];
 }
-
-// SECURITY: match a WhatsApp sender against a configured whitelist/blacklist
-// entry. Uses exact digit equality, with a suffix match ONLY when both numbers
-// are full-length (>=10 digits) to tolerate country-code presence/absence
-// (e.g. 919876543210 vs 9876543210). Never a loose substring `.includes`, which
-// let a short list entry match unrelated longer numbers (access-control bypass).
 function phoneMatches(sender, entry) {
   const a = String(sender || '').replace(/\D/g, '');
   const b = String(entry || '').replace(/\D/g, '');
-  if (!a || !b) return false;
+  if (!a ||!b) return false;
   if (a === b) return true;
   if (a.length >= 10 && b.length >= 10) {
     return a.endsWith(b) || b.endsWith(a);
   }
   return false;
 }
-
-// SECURITY: pushName is attacker-controlled and gets embedded into the AI prompt
-// wrapper `[Group Member "..." says]`. Strip quotes, brackets, and newlines so a
-// crafted display name cannot break out of the wrapper to inject fake
-// roles/instructions (prompt injection). Length-capped as before.
 function sanitizePushName(name) {
   return String(name || '')
-    .replace(/[\r\n"'`\[\]{}]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 50);
+  .replace(/[\r\n"'`\[\]{}]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim()
+  .slice(0, 50);
 }
-
-// ---- WhatsApp Core Engine ----
 let reconnectAttempts = 0;
 let lastDisconnectTime = 0;
-
 async function startWA() {
   if (sock || starting) return;
-
   const lock = acquireSessionLock();
   if (!lock.acquired) {
     console.warn(`[Baileys] WhatsApp session is locked by another running process (PID: ${lock.pid}). Skipping start.`);
@@ -419,19 +347,15 @@ async function startWA() {
     setStatus({ status: 'disconnected', qr: null });
     return;
   }
-
   starting = true;
   setStatus({ status: 'connecting', qr: null, pairingCode: null });
-
   try {
     const { state: authState, saveCreds } = await useMultiFileAuthState(authDir);
     const { version } = await fetchLatestBaileysVersion();
-
     const savedPhone = authState.creds?.me?.id?.split(':')[0] || null;
     const savedName = authState.creds?.me?.name || authState.creds?.me?.notify || null;
     if (savedPhone) state.phone = savedPhone;
     if (savedName) state.profileName = savedName;
-
     sock = makeWASocket({
       version,
       auth: authState,
@@ -440,18 +364,15 @@ async function startWA() {
       browser: ['WaBot AI', 'Chrome', '124.0.0'],
       syncFullHistory: false,
     });
-
     sock.ev.on('creds.update', () => {
       saveCreds();
       const n = authState.creds?.me?.name || authState.creds?.me?.notify || sock?.user?.name;
-      if (n && n !== state.profileName) {
+      if (n && n!== state.profileName) {
         setStatus({ profileName: n });
       }
     });
-
     sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr } = update;
-
       if (qr) {
         try {
           const qrDataUrl = await qrcode.toDataURL(qr);
@@ -460,19 +381,16 @@ async function startWA() {
           console.error('QR generation error:', e);
         }
       }
-
       if (connection === 'open') {
         reconnectAttempts = 0;
         const myNum = sock.user?.id?.split(':')[0] || authState.creds?.me?.id?.split(':')[0] || null;
         const myName = sock.user?.name || authState.creds?.me?.name || authState.creds?.me?.notify || 'WaBot Operator';
         setStatus({ status: 'connected', qr: null, rawQr: null, phone: myNum, profileName: myName, pairingCode: null });
-        pushLog('sys', 'system', `✅ WhatsApp successfully connected! ${myNum ? `Number: +${myNum}` : ''} ${myName ? `(${myName})` : ''}`);
+        pushLog('sys', 'system', `✅ WhatsApp successfully connected! ${myNum? `Number: +${myNum}` : ''} ${myName? `(${myName})` : ''}`);
       }
-
       if (connection === 'close') {
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         sock = null;
-
         if (statusCode === DisconnectReason.loggedOut) {
           wipeAllData();
           releaseSessionLock();
@@ -484,7 +402,7 @@ async function startWA() {
         } else if (statusCode === DisconnectReason.restartRequired) {
           setStatus({ status: 'connecting', qr: null });
           startWA();
-        } else if (statusCode !== DisconnectReason.loggedOut) {
+        } else if (statusCode!== DisconnectReason.loggedOut) {
           const now = Date.now();
           if (now - lastDisconnectTime < 15000) {
             reconnectAttempts++;
@@ -492,8 +410,7 @@ async function startWA() {
             reconnectAttempts = 1;
           }
           lastDisconnectTime = now;
-
-          const delay = reconnectAttempts > 3 ? Math.min(30000, 5000 * (reconnectAttempts - 2)) : 4000;
+          const delay = reconnectAttempts > 3? Math.min(30000, 5000 * (reconnectAttempts - 2)) : 4000;
           if (reconnectAttempts > 3) {
             pushLog('sys', 'system', `⚠️ Frequent disconnects detected (${reconnectAttempts}). Backing off next reconnect for ${Math.round(delay / 1000)}s.`);
           }
@@ -504,25 +421,18 @@ async function startWA() {
         }
       }
     });
-
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
-
+      if (type!== 'notify') return;
       for (const msg of messages) {
-        if (!msg.message || !msg.key) continue; // malformed upsert guard
+        if (!msg.message ||!msg.key) continue;
         const jid = msg.key.remoteJid;
         if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) continue;
-
         const myNum = sock?.user?.id?.split(':')[0] || authState?.creds?.me?.id?.split(':')[0] || state.phone;
-        const isSelf = !!(jid && myNum && (jid.split('@')[0] === myNum || jid.startsWith(myNum)));
-
-        // If fromMe and NOT a self-chat test, skip (user typing to someone else)
-        if (msg.key.fromMe && !isSelf) continue;
-
+        const isSelf =!!(jid && myNum && (jid.split('@')[0] === myNum || jid.startsWith(myNum)));
+        if (msg.key.fromMe &&!isSelf) continue;
         const msgId = msg.key.id;
         if (msgId && processedMsgIds.has(msgId)) continue;
         if (msgId) rememberMsgId(msgId);
-
         try {
           await handleMessage(msg);
         } catch (e) {
@@ -542,7 +452,6 @@ async function startWA() {
     starting = false;
   }
 }
-
 async function stopWA() {
   if (sock) {
     try {
@@ -558,22 +467,16 @@ async function stopWA() {
   releaseSessionLock();
   wipeAllData();
 }
-
 async function handleMessage(msg) {
   const jid = msg.key.remoteJid;
   if (!jid || jid === 'status@broadcast' || jid.endsWith('@newsletter')) return;
-
   const isGroup = jid.endsWith('@g.us');
   const { text, quotedText } = extractMessageContent(msg);
   if (!text) return;
-
   const sender = parseSender(jid, msg.key.participant, isGroup);
   const pushName = msg.pushName || '';
   const cfg = await getConfig();
-
   stats.received++;
-
-  // Group filter check
   if (isGroup) {
     if (!cfg.replyInGroups) {
       stats.ignored++;
@@ -582,14 +485,12 @@ async function handleMessage(msg) {
     }
     if (cfg.groupOnlyWhenMentioned) {
       const jidDigits = (v) =>
-        v ? String(v).split('@')[0].split(':')[0].replace(/\D/g, '') : '';
-
+        v? String(v).split('@')[0].split(':')[0].replace(/\D/g, '') : '';
       const botDigits = [
         jidDigits(sock?.user?.id),
         jidDigits(sock?.user?.lid),
         jidDigits(state.phone),
       ].filter(Boolean);
-
       const ctx =
         msg.message.extendedTextMessage?.contextInfo ||
         msg.message.ephemeralMessage?.message?.extendedTextMessage?.contextInfo ||
@@ -597,25 +498,19 @@ async function handleMessage(msg) {
         msg.message.imageMessage?.contextInfo ||
         msg.message.videoMessage?.contextInfo ||
         null;
-
       const mentioned = ctx?.mentionedJid || [];
       const isMentioned = mentioned.some((mJid) => botDigits.includes(jidDigits(mJid)));
       const isReplyToMe =
         ctx?.participant && botDigits.includes(jidDigits(ctx.participant));
-
       const lowerText = text.toLowerCase().trim();
       const hasBotPrefix = /^(bot\b|[!/.#]bot\b|@bot\b|ai\b|[!/.#]ai\b)/i.test(lowerText);
-
-      // Safe word-boundary match for profile name to prevent substring false triggers
       let hasNameMention = false;
       if (state.profileName && state.profileName.trim().length >= 2) {
         const escaped = escapeRegExp(state.profileName.trim());
         const nameRegex = new RegExp(`\\b${escaped}\\b`, 'i');
         hasNameMention = nameRegex.test(text);
       }
-
       const isTriggered = isMentioned || isReplyToMe || hasBotPrefix || hasNameMention;
-
       if (!isTriggered) {
         stats.ignored++;
         pushLog('sys', 'system', `ℹ️ Group message from ${pushName || sender} ignored (Bot not mentioned or tagged in group).`);
@@ -623,8 +518,6 @@ async function handleMessage(msg) {
       }
     }
   }
-
-  // Blacklist / Whitelist filter check
   if (cfg.filterMode === 'blacklist' && Array.isArray(cfg.blacklist) && cfg.blacklist.length > 0) {
     const isBlocked = cfg.blacklist.some((num) => phoneMatches(sender, num));
     if (isBlocked) {
@@ -634,7 +527,6 @@ async function handleMessage(msg) {
       return;
     }
   }
-
   if (cfg.filterMode === 'whitelist' && Array.isArray(cfg.whitelist) && cfg.whitelist.length > 0) {
     const isAllowed = cfg.whitelist.some((num) => phoneMatches(sender, num));
     if (!isAllowed) {
@@ -643,51 +535,40 @@ async function handleMessage(msg) {
       return;
     }
   }
-
   pushLog('in', sender, text, { isGroup, pushName });
-
   if (!cfg.autoReply) {
     stats.ignored++;
     pushLog('sys', 'system', `ℹ️ Message from ${sender} received, but Auto-Reply is turned OFF.`);
     return;
   }
-
-  // Loop breaker guard: stop rapid automated ping-pong / bot loops
   if (!loopBreaker.canReply(jid)) {
     stats.ignored++;
     pushLog('sys', 'system', `⚠️ Rate limit: Automated reply paused for ${sender} (too many messages in short period).`);
     return;
   }
-
-  // Mark message as read if enabled
   if (cfg.markRead && sock?.readMessages) {
     try {
       await sock.readMessages([msg.key]);
     } catch {}
   }
-
-  // 1. Check custom quick-rules before invoking Gemini
   if (Array.isArray(cfg.customRules)) {
     const matchedRule = cfg.customRules.find((rule) => {
-      if (!rule.enabled || !rule.keyword || !rule.reply) return false;
+      if (!rule.enabled ||!rule.keyword ||!rule.reply) return false;
       const kw = rule.keyword.toLowerCase().trim();
       const txt = text.toLowerCase().trim();
       if (rule.matchType === 'exact') return txt === kw;
       if (rule.matchType === 'starts') return txt.startsWith(kw);
-      return txt.includes(kw); // default 'contains'
+      return txt.includes(kw);
     });
-
     if (matchedRule) {
       stats.rulesTriggered++;
       stats.replied++;
-
       loopBreaker.recordReply(jid);
       await simulateTyping(jid, matchedRule.reply, cfg.typingDelay);
       try {
         const sent = await sock.sendMessage(jid, { text: matchedRule.reply }, { quoted: msg });
         if (sent?.key?.id) rememberMsgId(sent.key.id);
       } catch {}
-
       pushLog('out', sender, matchedRule.reply, {
         isGroup,
         pushName,
@@ -696,8 +577,6 @@ async function handleMessage(msg) {
       return;
     }
   }
-
-  // 2. Clear command detection
   if (text.toLowerCase() === '/reset' || text.toLowerCase() === '!reset') {
     clearChatHistory(jid);
     const resetMsg = 'Chat context has been reset. We can start a fresh conversation.';
@@ -709,31 +588,44 @@ async function handleMessage(msg) {
     pushLog('out', sender, resetMsg, { isGroup, pushName });
     return;
   }
-
-  // 3. Gemini AI auto-reply
   try {
     await sock.sendPresenceUpdate('composing', jid);
   } catch {}
-
   const userTextForAI = isGroup && pushName
-    ? `[Group Member "${sanitizePushName(pushName)}" says]: ${text}`
+  ? `[Group Member "${sanitizePushName(pushName)}" says]: ${text}`
     : text;
+
+  // ====== ALL LANGUAGE SUPPORT ======
+  const languageInstruction = `
+[CRITICAL LANGUAGE RULE - MUST FOLLOW - HIGHEST PRIORITY]:
+1. Detect language of this user message: "${text.slice(0,120).replace(/"/g,'')}"
+2. You MUST reply in EXACT SAME LANGUAGE as user.
+3. Tamil -> reply in Tamil
+4. Hindi -> reply in Hindi
+5. Telugu, Kannada, Malayalam, Bengali, Marathi, Gujarati, Punjabi, Urdu etc -> reply in same language
+6. Tanglish (Tamil+English mix) -> reply in Tanglish
+7. Hinglish (Hindi+English mix) -> reply in Hinglish
+8. English -> reply in English
+9. NEVER force English if user spoke other language.
+10. Keep natural native style, not translated.
+11. This rule overrides ANY other language instruction.
+`;
+  const finalSystemPrompt = (cfg.systemPrompt || '') + languageInstruction;
+  // ====== END ALL LANGUAGE SUPPORT ======
 
   const reply = await generateReply({
     jid,
     apiKey: cfg.geminiKey,
     model: cfg.model,
-    systemPrompt: cfg.systemPrompt,
+    systemPrompt: finalSystemPrompt,
     userText: userTextForAI,
     quotedText,
     temperature: cfg.temperature,
     maxHistoryTurns: cfg.maxHistoryTurns,
     sessionResetMinutes: cfg.sessionResetMinutes,
   });
-
   loopBreaker.recordReply(jid);
   await simulateTyping(jid, reply, cfg.typingDelay);
-
   try {
     const sent = await sock.sendMessage(jid, { text: reply }, { quoted: msg });
     if (sent?.key?.id) rememberMsgId(sent.key.id);
@@ -745,132 +637,72 @@ async function handleMessage(msg) {
     pushLog('sys', 'system', `❌ Failed to dispatch reply to ${sender}: ${redactSecrets(sendErr.message)}`);
   }
 }
-
 async function simulateTyping(jid, text, mode = 'realistic') {
   if (mode === 'off' || mode === 'instant') return;
-
   try {
     await sock?.sendPresenceUpdate('composing', jid);
   } catch {}
-
   let waitMs = 1200;
   if (mode === 'fast') {
     waitMs = 800;
   } else if (mode === 'realistic') {
     waitMs = Math.min(3500, Math.max(1200, (text?.length || 20) * 25));
   }
-
   await sleep(waitMs);
   try {
     await sock?.sendPresenceUpdate('paused', jid);
   } catch {}
 }
-
-// ---- REST API Endpoints ----
-
-// Public health probe
-app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, status: state.status, uptime: Math.floor((Date.now() - startTime) / 1000) });
-});
-
-// Loopback-only token resolution endpoint for local frontend auto-discovery
-app.get('/api/auth/token', async (req, res) => {
-  // Use the raw TCP peer address, never req.ip / X-Forwarded-For, so a spoofed
-  // forwarding header can never make a remote client look like loopback.
-  const clientIp = req.socket?.remoteAddress || req.connection?.remoteAddress || '';
-  const origin = req.headers.origin || '';
-  const isLocal = isLoopbackIp(clientIp);
-  let localOriginAllowed = isLocalOrigin(origin);
-
-  // Do not let an arbitrary localhost web app steal the auto-issued token.
-  // Same-origin access is always valid; Vite dev server :5173 is the only
-  // cross-origin browser origin needed for the local development dashboard.
-  if (origin) {
-    try {
-      const originUrl = new URL(origin);
-      const requestHost = String(req.get('host') || '').split(':')[0].toLowerCase();
-      const hostMatches = originUrl.hostname.toLowerCase() === requestHost;
-      const devOrigin = originUrl.protocol === 'http:' &&
-        (originUrl.hostname === 'localhost' || originUrl.hostname === '127.0.0.1') &&
-        originUrl.port === '5173';
-      localOriginAllowed = localOriginAllowed && (hostMatches || devOrigin);
-    } catch {
-      localOriginAllowed = false;
-    }
-  }
-
-  if (!isBehindProxy && isLocal && localOriginAllowed) {
-    const cfg = await getConfig();
-    return res.json({ ok: true, token: cfg.authToken });
-  }
-
-  return res.status(403).json({
-    ok: false,
-    error: 'Forbidden: Automatic token resolution only permitted on local loopback interface.',
-  });
-});
-
-// Rate limiters for privileged endpoints
 const generalLimiter = rateLimit({ windowMs: 60000, max: 120, message: 'Too many requests, slow down.' });
 const aiLimiter = rateLimit({ windowMs: 60000, max: 15, message: 'AI request limit reached. Please wait a minute.' });
 const keyLimiter = rateLimit({ windowMs: 60000, max: 10, message: 'Key verification limit reached.' });
 const pairLimiter = rateLimit({ windowMs: 300000, max: 5, message: 'Pairing requests rate-limited. Try again later.' });
-
-// Protected API routes require valid token
 app.use('/api', generalLimiter, requireAuth);
-
 app.get('/api/state', (_req, res) => {
   state.uptime = Math.floor((Date.now() - startTime) / 1000);
   res.json({
-    ...state,
-    stats: { ...stats, activeSessions: getActiveSessionCount() },
+  ...state,
+    stats: {...stats, activeSessions: getActiveSessionCount() },
     logs,
   });
 });
-
 app.get('/api/config', async (_req, res) => {
   const cfg = await getConfig();
-  const { geminiKey, authToken, ...safeCfg } = cfg;
+  const { geminiKey, authToken,...safeCfg } = cfg;
   res.json({
-    ...safeCfg,
-    geminiKeySet: !!geminiKey,
+  ...safeCfg,
+    geminiKeySet:!!geminiKey,
   });
 });
-
 app.post('/api/config', async (req, res) => {
   try {
-    const patch = { ...req.body };
+    const patch = {...req.body };
     if (patch.geminiKey === '' || (patch.geminiKey && patch.geminiKey.includes('••••'))) {
       delete patch.geminiKey;
     }
     const cfg = await saveConfig(patch);
-    res.json({ ok: true, geminiKeySet: !!cfg.geminiKey });
+    res.json({ ok: true, geminiKeySet:!!cfg.geminiKey });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message || 'Invalid configuration' });
   }
 });
-
 app.post('/api/connect', async (_req, res) => {
   startWA();
   res.json({ ok: true });
 });
-
 app.post('/api/disconnect', async (_req, res) => {
   await stopWA();
   res.json({ ok: true });
 });
-
 app.post('/api/pairing-code', pairLimiter, async (req, res) => {
   const { phone } = req.body;
-  if (!phone || typeof phone !== 'string') {
+  if (!phone || typeof phone!== 'string') {
     return res.status(400).json({ ok: false, error: 'Phone number string is required' });
   }
-
   const cleanPhone = phone.replace(/\D/g, '');
   if (cleanPhone.length < 10 || cleanPhone.length > 16) {
     return res.status(400).json({ ok: false, error: 'Invalid phone number format' });
   }
-
   try {
     if (!sock) {
       await startWA();
@@ -887,7 +719,6 @@ app.post('/api/pairing-code', pairLimiter, async (req, res) => {
     res.status(500).json({ ok: false, error: redactSecrets(err.message) });
   }
 });
-
 app.post('/api/test-key', keyLimiter, async (req, res) => {
   const cfg = await getConfig();
   const keyToTest = req.body.key?.trim() || cfg.geminiKey;
@@ -895,14 +726,13 @@ app.post('/api/test-key', keyLimiter, async (req, res) => {
   const result = await verifyApiKey(keyToTest, modelToTest);
   res.json(result);
 });
-
 app.post('/api/test-ai', aiLimiter, async (req, res) => {
   const { message, systemPrompt, model, history } = req.body;
   const cfg = await getConfig();
-  if (systemPrompt !== undefined && (typeof systemPrompt !== 'string' || systemPrompt.length > 10000)) {
+  if (systemPrompt!== undefined && (typeof systemPrompt!== 'string' || systemPrompt.length > 10000)) {
     return res.status(400).json({ error: 'systemPrompt must be a string of at most 10,000 characters' });
   }
-  if (model !== undefined) {
+  if (model!== undefined) {
     try { validateConfigPatch({ model }); }
     catch { return res.status(400).json({ error: 'Invalid Gemini model' }); }
   }
@@ -910,17 +740,16 @@ app.post('/api/test-ai', aiLimiter, async (req, res) => {
   if (!apiKey) {
     return res.status(400).json({ error: 'Gemini API key is not configured' });
   }
-  if (typeof message !== 'string' || !message.trim() || message.length > 4000) {
+  if (typeof message!== 'string' ||!message.trim() || message.length > 4000) {
     return res.status(400).json({ error: 'Message must be between 1 and 4000 characters' });
   }
-
   try {
     const reply = await simulateChat({
       apiKey,
       model: model || cfg.model || 'gemini-3.5-flash-lite',
       systemPrompt: systemPrompt || cfg.systemPrompt,
       message,
-      history: Array.isArray(history) ? history.slice(-40) : [],
+      history: Array.isArray(history)? history.slice(-40) : [],
       temperature: cfg.temperature || 0.7,
     });
     res.json({ reply });
@@ -928,21 +757,16 @@ app.post('/api/test-ai', aiLimiter, async (req, res) => {
     res.status(500).json({ error: redactSecrets(err.message) });
   }
 });
-
 app.post('/api/clear-history', (req, res) => {
   const { jid } = req.body;
   clearChatHistory(jid);
-  res.json({ ok: true, message: jid ? `Cleared memory for ${jid}` : 'Cleared all conversation histories' });
+  res.json({ ok: true, message: jid? `Cleared memory for ${jid}` : 'Cleared all conversation histories' });
 });
-
 app.post('/api/clear-logs', (_req, res) => {
   logs.length = 0;
   io.emit('logs-cleared');
   res.json({ ok: true });
 });
-
-// Serve production build if present.
-// Never cache index.html; content-hashed assets can be cached safely.
 const dist = path.join(__dirname, '..', '..', 'web', 'dist');
 if (existsSync(dist)) {
   app.use(express.static(dist, {
@@ -966,14 +790,11 @@ if (existsSync(dist)) {
     });
   });
 }
-
 io.on('connection', (socket) => {
   state.uptime = Math.floor((Date.now() - startTime) / 1000);
-  socket.emit('state', { ...state, stats: { ...stats, activeSessions: getActiveSessionCount() } });
+  socket.emit('state', {...state, stats: {...stats, activeSessions: getActiveSessionCount() } });
   logs.slice(-80).forEach((l) => socket.emit('log', l));
 });
-
-// Graceful process termination
 async function gracefulShutdown(signal) {
   console.log(`\n🛑 Received ${signal}. Shutting down WaBot cleanly...`);
   releaseSessionLock();
@@ -989,11 +810,8 @@ async function gracefulShutdown(signal) {
   });
   setTimeout(() => process.exit(0), 3000).unref();
 }
-
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
-
-// Start the HTTP server without terminating unrelated processes.
 server.on('error', (err) => {
   if (err.code === 'EADDRINUSE') {
     console.error('❌ Port ' + PORT + ' is already in use. Stop the existing instance or choose another PORT.');
@@ -1002,17 +820,15 @@ server.on('error', (err) => {
   }
   process.exit(1);
 });
-
 server.listen(PORT, '0.0.0.0', async () => {
   await getConfig();
   console.log('\n=================================================');
   console.log('🚀 WaBot Server is active & listening!');
-  console.log('📱 Local:              http://localhost:' + PORT);
-  localIps.forEach((ip) => console.log('🌐 Network / Wi-Fi:   http://' + ip + ':' + PORT));
+  console.log('📱 Local: http://localhost:' + PORT);
+  localIps.forEach((ip) => console.log('🌐 Network / Wi-Fi: http://' + ip + ':' + PORT));
   console.log('🔐 Web Access Token: protected (not printed to logs)');
-  console.log('🛡️  Security:          CORS, authentication, WebSocket auth & rate-limiting ACTIVE');
+  console.log('🛡️ Security: CORS, authentication, WebSocket auth & rate-limiting ACTIVE');
   console.log('=================================================\n');
-
   const credsFile = path.join(__dirname, '..', 'auth', 'creds.json');
   if (existsSync(credsFile)) {
     try {
